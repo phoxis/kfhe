@@ -31,7 +31,7 @@ kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = T
 {
   print_prec <- 8;  # Number of decimal places to round when printing feedback
   
-  # Kalman filter variables for the model Kalman Filter, KF-m
+  # Kalman filter variables for the model Kalman Filter, kf-m
   kf_m             <- list (); 
   kf_m$P           <- c ();    # Posterior variance/error
   kf_m$V           <- c ();    # Measurement variance/error
@@ -40,7 +40,7 @@ kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = T
   kf_m$init_h      <- c ()     # The initial model.
   kf_m$train_blend <- c ();    # Internal state
     
-  # Kalman filter variables for the distribution KF, KF-d
+  # Kalman filter variables for the kf-w
   kf_d        <- list ();
   kf_d$P_dist <- c ();    # Posterior variance/error
   kf_d$V_dist <- c ();    # Measurement variance/error
@@ -49,8 +49,8 @@ kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = T
   
   # Debugging information
   debug_info                 <- list ();
-  debug_info$train_accuracy  <- c (); # Accuracy on the train blend error
-  debug_info$train_f         <- c (); # F-Score  on the train blend error
+  debug_info$train_accuracy  <- c ();    # Accuracy on the train blend error
+  debug_info$train_f         <- c ();    # F-Score  on the train blend error
   debug_info$state_err       <- list (); # Error function evaluation of the train blend with respect to ground truth
   debug_info$blend_err_arr   <- c ();    # Uniformly weighted training blend error
   debug_info$D               <- list (); # Store distribution of all iterations
@@ -66,17 +66,17 @@ kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = T
     rpart_control = rpart.control(minsplit = 1, cp = -1, maxdepth = 30); # Default
   }
     
-  # Initialise the KF-m statetrain_blend, this_err, this_blend_err
+  # Initialise the kf-m statetrain_blend, this_err, this_blend_err
   kf_m$init_h      <- rpart (formula = Y ~ ., data = cbind (X, Y), control = rpart_control);
   kf_m$train_blend <- predict (kf_m$init_h, X, type = "prob");
   
   unwt_comp_err    <- err_fun (kf_m$train_blend, Y, NULL); # Find the per datapoint error. This is a vector.
   uniwt_comp_err   <- unwt_comp_err * (1/nrow (X));        # Get a uniformly weighted version. This is a weighted vector.
   
-  # Initialise the state variance for model KF (KF-m)
+  # Initialise the state variance for kf-m
   kf_m$P[1] <- 1.0; # No confidence
   
-  # Initialise the state variance for distribution KF (KF-d)
+  # Initialise the state variance for kf-w
   # Optionally we can consider this as a vector and consider each component of
   # the distribution being managed by the KF
   kf_d$D              <- rep (1 / nrow (X), nrow (X));
@@ -94,6 +94,11 @@ kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = T
   {
     # Print feedback
     if (feedback == TRUE) { cat ("\nIter = ", formatC (t, print_prec), ""); }
+    
+    ############################################
+    #### Model Kalman filter (kf-m) section ####
+    ############################################
+    
     
     ############################
     #### Time update kf-m   ####
@@ -145,7 +150,7 @@ kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = T
       }
       # Now we have this_pred
       
-      # For KF-m, calculate the measurement and the related error. This is a heuristic and can be computed in different ways.
+      # For kf-m, calculate the measurement and the related error. This is a heuristic and can be computed in different ways.
       this_measurement <- (this_pred + kf_m$train_blend)/2;
       # this_measurement <- this_pred;
       
@@ -164,7 +169,7 @@ kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = T
       this_d_err     <- uniwt_comp_err;
       
       
-      # Measurement error for the model KF-m. This is a heuristic and can be computed in different ways.
+      # Measurement error for the model kf-m. This is a heuristic and can be computed in different ways.
       kf_m$V[t]          <- sum (this_m_err);
       
       if (reset_dist == TRUE)
@@ -206,14 +211,14 @@ kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = T
       }
     } # End of retry loop
     
-    # Compute the Kalman gain for the KF-m
+    # Compute the Kalman gain for the kf-m
     kf_m$K[t]        <- kf_m$P[t] / (kf_m$P[t] + kf_m$V[t] + .Machine$double.xmin);
     # Blending the training predictions. This is not required for training, as we only need to store the kalman gains.
-    # Update internal state for KF-m
+    # Update internal state for kf-m
     kf_m$train_blend <- kf_m$train_blend + kf_m$K[t] * (this_measurement - kf_m$train_blend);
     prev_blend_err   <- this_blend_err;
     
-    # Update internal error for the KF-m
+    # Update internal error for the kf-m
     P_t_pred <- kf_m$P[t] - kf_m$P[t] * kf_m$K[t];
     
     kf_m$P[t+1] <- P_t_pred;
@@ -231,8 +236,12 @@ kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = T
     ##################################################################################################
     
     
+    #############################################
+    #### Weight Kalman filter (kf-w) section ####
+    #############################################
+    
     ############################
-    #### Time update kf-d   ####
+    #### Time update kf-w   ####
     ############################
     # Based on present formulation, this is identity
     proc_noise <- 0;
@@ -241,21 +250,21 @@ kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = T
     
     
     #################################
-    #### Measurement update kf-d ####
+    #### Measurement update kf-w ####
     #################################
-    # Measurement of state vector of the distribution KF-d
+    # Measurement of state vector of the distribution kf-w
     dtemp           <- unwt_comp_err;
     dtemp[dtemp==0] <- -1;
     kf_d$D_t_obs    <- kf_d$D * exp (dtemp);
     kf_d$D_t_obs    <- kf_d$D_t_obs / sum (kf_d$D_t_obs);
     
-    # Measurement error V_dist for the distribution KF-d
+    # Measurement error V_dist for the distribution kf-w
     kf_d$V_dist        <- sum (this_d_err);
  
-    # Compute the Kalman gain for the distribution KF-d
+    # Compute the Kalman gain for the distribution kf-w
     kf_d$K_dist[[t]]   <- kf_d$P_dist / (kf_d$P_dist + kf_d$V_dist + .Machine$double.xmin);
 
-    # Update iternal state for the distribition KF-d
+    # Update iternal state for the distribition kf-w
     kf_d$D             <- kf_d$D + kf_d$K_dist[[t]] * (kf_d$D_t_obs - kf_d$D); # Fishy
       
     # Update internal error for the distribution KF
@@ -399,7 +408,7 @@ err_fun <- function (pred, target, wt)
   {
     
   }
-  if (is.null (wt) == TRUE) # Just don't weight
+  if (is.null (wt) == TRUE)
   {
     wt <- 1;
   }
@@ -430,7 +439,6 @@ confusion_metric <- function (pred_vec, target_vec, metric)
   fobj <- F.measure.single.over.classes (target_one_hot_mat, pred_one_hot_mat);
   return (fobj$average[metric]);
 }
-
 
 to_one_hot <- function (one_cool_vec)
 {

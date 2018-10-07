@@ -1,6 +1,6 @@
 require (caret);
 require (rpart);
-
+require (PerfMeas);
 
 ###########################################
 ####             Training             #####
@@ -27,7 +27,7 @@ require (rpart);
 #### Return    : An object of type kfhe_m. Consists of kf-m. Other components are for           ####
 ####             debugging and analysis purpose                                                 ####
 ####################################################################################################
-kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = TRUE, early_stop = TRUE, reset_dist = TRUE, feedback = TRUE)
+kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = TRUE, early_stop = TRUE, alpha = 0, wt_mode = "exp", reset_dist = TRUE, feedback = TRUE)
 {
   print_prec <- 8;  # Number of decimal places to round when printing feedback
   
@@ -120,12 +120,17 @@ kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = T
     {
       # NOTE: Can lead to infinite loop
       resample_flag <- TRUE;
+      resample_count <- 0;
       while (resample_flag == TRUE)
       {
         bsamp <- sample (1:nrow (X), nrow (X), replace = TRUE, prob = kf_d$D / sum (kf_d$D));
         resample_flag <- sum (table(Y[bsamp]) == 0) != 0;
         # cat ("resample. \n");
-        resample_flag <- FALSE;
+        resample_count <- resample_count + 1;
+        if (resample_count >= 100)
+        {
+          resample_flag <- FALSE;
+        }
       }
       # Using rpart
       kf_m$h_list[[t]] <- rpart (formula = Y ~ ., data = cbind (X, Y)[bsamp,], control = rpart_control);
@@ -253,10 +258,18 @@ kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = T
     #### Measurement update kf-w ####
     #################################
     # Measurement of state vector of the distribution kf-w
-    dtemp           <- unwt_comp_err;
-    dtemp[dtemp==0] <- -1;
-    kf_d$D_t_obs    <- kf_d$D * exp (dtemp);
-    kf_d$D_t_obs    <- kf_d$D_t_obs / sum (kf_d$D_t_obs);
+    if (wt_mode == "exp")
+    {
+      dtemp           <- unwt_comp_err;
+      dtemp           <- dtemp + 1/nrow(X);
+      kf_d$D_t_obs    <- kf_d$D * exp (dtemp);
+    } 
+    if (wt_mode == "linear") {
+      dtemp           <- unwt_comp_err;
+      kf_d$D_t_obs    <- rep (1/nrow(X), nrow(X));
+      kf_d$D_t_obs    <- kf_d$D_t_obs + kf_d$D * (dtemp);
+      kf_d$D_t_obs    <- kf_d$D_t_obs / sum (kf_d$D_t_obs);
+    }
     
     # Measurement error V_dist for the distribution kf-w
     kf_d$V_dist        <- sum (this_d_err);
@@ -269,14 +282,7 @@ kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = T
       
     # Update internal error for the distribution KF
     P_dist_old <- kf_d$P_dist;
-    kf_d$P_dist      <- kf_d$P_dist - kf_d$P_dist * kf_d$K_dist[[t]];
-    
-    # Stopping is both the distribution measurement and process noises are 0.
-    # if ((kf_d$P_dist == 0) && (kf_d$V_dist == 0))
-    # {
-    #   max_iter <- t;
-    #   break;
-    # }
+    kf_d$P_dist        <- kf_d$P_dist - kf_d$P_dist * kf_d$K_dist[[t]];
 
     # Compute the change in the internal state actual error
     debug_info$blend_err_delta[t] <- prev_blend_err - this_blend_err;
@@ -301,7 +307,7 @@ kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = T
     
     debug_info$D[[t]]        <- kf_d$D;
     
-    #if ((early_stop == TRUE) && (this_blend_err < 10e-10))
+#     if ((early_stop == TRUE) && (this_blend_err < 10e-10))
     if ((early_stop == TRUE) && (kf_m$K[t] == 0)) # Similar in this case. Although practically it is better to stop on validation set.
     {
       max_iter <- t;
@@ -453,7 +459,7 @@ to_one_hot <- function (one_cool_vec)
   return (one_hot_matrix);
 }
 
-induce_class_noise <- function (X, nfrac = 0.05, cidx = ncol (X))
+induce_class_noise <- function (X, nfrac = 0.05, cidx = ncol (X), from_file = NA)
 {
   stopifnot ((cidx <= ncol (X)) && (cidx > 0));
   stopifnot ((nfrac >= 0) && (nfrac <= 1));
@@ -466,7 +472,15 @@ induce_class_noise <- function (X, nfrac = 0.05, cidx = ncol (X))
   
   cls_vals <- unique (X[,cidx]);
   
-  noise_tgt_idx <- sample (1:nrow (X), round (nrow (X) * nfrac));
+  if (is.na (from_file))
+  {
+    cat ("Generating noise randomly\n");
+    noise_tgt_idx <- sample (1:nrow (X), round (nrow (X) * nfrac));
+  }
+  else {
+    cat ("Generating noise from pre-generated index\n");
+    load (paste0 ("noise_idx_lvl_", nfrac, "_", from_file,".RData"));
+  }
   
   for (this_tgt_idx in noise_tgt_idx)
   {
@@ -475,5 +489,16 @@ induce_class_noise <- function (X, nfrac = 0.05, cidx = ncol (X))
     X[this_tgt_idx,cidx] <- this_noise_cls;
   }
   
-  return (X)
+  return (X);
+}
+
+
+generate_noise_idx <- function (dataset_names, nfrac)
+{
+  for (this_dataset in dataset_names)
+  {
+    X <- read.csv (paste0 ("data/uci/", this_dataset, ".dat"), header = FALSE);
+    noise_tgt_idx <- sample (1:nrow (X), round (nrow (X) * nfrac));
+    save (noise_tgt_idx, file = paste0 ("noise_idx_lvl_", nfrac, "_", this_dataset,".RData"));
+  }
 }

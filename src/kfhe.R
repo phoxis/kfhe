@@ -63,7 +63,7 @@ kfhe_train <- function (X, Y, max_iter, rpart_control = NA, blend_with_class = T
   
   if (is.na (rpart_control))
   {
-    rpart_control = rpart.control(minsplit = 1, cp = -1, maxdepth = 30); # Default
+    rpart_control = rpart.control(minsplit = 20, cp = -1, maxdepth = 30); # Default
   }
     
   # Initialise the kf-m statetrain_blend, this_err, this_blend_err
